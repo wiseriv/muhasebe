@@ -6,44 +6,57 @@ import io
 import json
 import requests
 import base64
-import concurrent.futures # Paralel işlem kütüphanesi
+import concurrent.futures
 import time
 
 # --- AYARLAR ---
-st.set_page_config(page_title="Mihsap AI - Turbo", layout="wide", page_icon="🚀")
+st.set_page_config(page_title="Mihsap AI - Ultimate", layout="wide", page_icon="⚡")
 API_KEY = st.secrets.get("GEMINI_API_KEY")
 
 if not API_KEY:
     st.error("Lütfen Secrets ayarlarından GEMINI_API_KEY'i ekleyin.")
     st.stop()
 
-# --- OPTİMİZASYON FONKSİYONU ---
+# --- 1. DEDEKTİF: MODELLERİ BUL VE SIRALA ---
+@st.cache_data # Google'a her saniye sormasın, hafızaya alsın
+def modelleri_getir():
+    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={API_KEY}"
+    try:
+        response = requests.get(url)
+        if response.status_code == 200:
+            data = response.json()
+            tum_modeller = []
+            if 'models' in data:
+                for m in data['models']:
+                    if 'generateContent' in m.get('supportedGenerationMethods', []):
+                        ad = m['name'].replace("models/", "")
+                        tum_modeller.append(ad)
+            
+            # Akıllı Sıralama: Flash'ı en başa al
+            flash = [m for m in tum_modeller if "flash" in m]
+            diger = [m for m in tum_modeller if "flash" not in m]
+            return flash + diger
+        return []
+    except:
+        return []
+
+# --- 2. SIKIŞTIRMA: HIZ İÇİN RESMİ KÜÇÜLT ---
 def resmi_hazirla(image_bytes):
-    """
-    Resmi küçültür ve sıkıştırır (Hızın Sırrı Buradadır).
-    Büyük resim göndermek zaman kaybıdır.
-    """
     img = Image.open(io.BytesIO(image_bytes))
+    if img.mode in ("RGBA", "P"): img = img.convert("RGB")
     
-    # Eğer resim PNG ise JPEG yap (Daha az yer kaplar)
-    if img.mode in ("RGBA", "P"): 
-        img = img.convert("RGB")
-    
-    # Boyutlandırma: En uzun kenarı 1024 piksel yap (Okunabilirlik bozulmaz)
+    # Resmi 1024px'e küçült (Google için yeterli)
     img.thumbnail((1024, 1024))
     
-    # Sıkıştırılmış çıktı al
     buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=85) # %85 kalite yeterli
+    img.save(buf, format="JPEG", quality=80)
     return base64.b64encode(buf.getvalue()).decode('utf-8')
 
+# --- 3. ANALİZ MOTORU (TEK DOSYA İÇİN) ---
 def gemini_ile_analiz_et(dosya_objesi, secilen_model):
-    """Tek bir dosyayı analiz eden fonksiyon."""
+    dosya_adi = dosya_objesi.name
     try:
-        # Dosya ismini al
-        dosya_adi = dosya_objesi.name
-        
-        # Resmi Hızlıca Hazırla (Sıkıştır)
+        # Resmi hazırla
         base64_image = resmi_hazirla(dosya_objesi.getvalue())
         
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{secilen_model}:generateContent?key={API_KEY}"
@@ -56,7 +69,7 @@ def gemini_ile_analiz_et(dosya_objesi, secilen_model):
                     Cevabı SADECE aşağıdaki formatta saf JSON olarak ver:
                     {
                         "isyeri_adi": "İşyeri Adı",
-                        "fiş_no": "Belge No",
+                        "fiş_no": "Fiş No (Yoksa boş)",
                         "tarih": "GG.AA.YYYY",
                         "toplam_tutar": "00.00",
                         "toplam_kdv": "00.00"
@@ -66,59 +79,62 @@ def gemini_ile_analiz_et(dosya_objesi, secilen_model):
             }]
         }
 
-        # İsteği Gönder
         response = requests.post(url, headers=headers, json=payload)
         
         if response.status_code == 429:
-            return {"dosya_adi": dosya_adi, "hata": "Hız Sınırı (Kota) Aşıldı! Biraz bekle."}
-            
+            return {"dosya_adi": dosya_adi, "hata": "⏳ Hız Sınırı (429)."}
         if response.status_code != 200:
-            return {"dosya_adi": dosya_adi, "hata": f"Google Hatası: {response.status_code}"}
+            return {"dosya_adi": dosya_adi, "hata": f"Hata ({response.status_code})"}
 
         sonuc_json = response.json()
-        metin = sonuc_json['candidates'][0]['content']['parts'][0]['text']
-        metin = metin.replace("```json", "").replace("```", "").strip()
-        
-        veri = json.loads(metin)
-        veri["dosya_adi"] = dosya_adi # Dosya adını ekle
-        return veri
+        try:
+            metin = sonuc_json['candidates'][0]['content']['parts'][0]['text']
+            metin = metin.replace("```json", "").replace("```", "").strip()
+            veri = json.loads(metin)
+            veri["dosya_adi"] = dosya_adi
+            return veri
+        except:
+            return {"dosya_adi": dosya_adi, "hata": "Veri okunamadı"}
 
     except Exception as e:
         return {"dosya_adi": dosya_adi, "hata": str(e)}
 
 # --- ARAYÜZ ---
 with st.sidebar:
-    st.header("🚀 Turbo Ayarları")
-    # Flash modeli en hızlısıdır
-    secilen_model = st.selectbox("Model", ["gemini-1.5-flash", "gemini-1.5-flash-latest"], index=0)
+    st.header("⚙️ Ayarlar")
     
-    # İşçi Sayısı (Worker): Aynı anda kaç fiş gitsin?
-    # Ücretsiz planda 15 RPM sınırı var. Çok artırırsan 429 alırsın.
-    isci_sayisi = st.slider("Eşzamanlı İşlem Sayısı", min_value=1, max_value=5, value=3)
-    st.caption("Not: Sayıyı artırmak hızı artırır ama 'Kota Hatası' riskini yükseltir.")
+    # Modelleri Google'dan çek
+    mevcut_modeller = modelleri_getir()
+    
+    if mevcut_modeller:
+        secilen_model = st.selectbox("Model", mevcut_modeller, index=0)
+        st.success(f"Aktif Model: {secilen_model}")
+    else:
+        st.error("Model bulunamadı! Manuel giriş yapın.")
+        secilen_model = st.text_input("Model Adı", "gemini-1.5-flash")
 
-st.title("🚀 Mihsap AI (Turbo Mod)")
-st.write("Resim sıkıştırma ve paralel işleme ile maksimum hız.")
+    # Hız Ayarı
+    isci_sayisi = st.slider("Aynı Anda İşlem", 1, 5, 3)
 
-yuklenen_dosyalar = st.file_uploader("Fişleri Yükle (50-100 tane deneyebilirsin)", type=['jpg', 'png', 'jpeg'], accept_multiple_files=True)
+st.title("⚡ Mihsap AI - Ultimate")
+st.write("Doğru model tespiti + Turbo Hız.")
+
+yuklenen_dosyalar = st.file_uploader("Fişleri Yükle", type=['jpg', 'png', 'jpeg'], accept_multiple_files=True)
 
 if yuklenen_dosyalar:
-    if st.button("🔥 Analizi Başlat"):
-        
+    if st.button("🚀 Başlat"):
         tum_veriler = []
         hatali_dosyalar = []
         
         bar = st.progress(0)
         durum = st.empty()
         
-        # --- PARALEL İŞLEME MOTORU ---
-        # ThreadPoolExecutor: Aynı anda birden fazla işçi çalıştırır
+        # Paralel İşleme Başlıyor
         with concurrent.futures.ThreadPoolExecutor(max_workers=isci_sayisi) as executor:
-            
             # Görevleri dağıt
-            future_to_file = {executor.submit(gemini_ile_analiz_et, dosya, secilen_model): dosya for dosya in yuklenen_dosyalar}
+            future_to_file = {executor.submit(gemini_ile_analiz_et, d, secilen_model): d for d in yuklenen_dosyalar}
             
-            tamamlanan = 0
+            completed = 0
             for future in concurrent.futures.as_completed(future_to_file):
                 sonuc = future.result()
                 
@@ -127,20 +143,19 @@ if yuklenen_dosyalar:
                 else:
                     tum_veriler.append(sonuc)
                 
-                tamamlanan += 1
-                bar.progress(tamamlanan / len(yuklenen_dosyalar))
-                durum.text(f"Tamamlanan: {tamamlanan} / {len(yuklenen_dosyalar)}")
+                completed += 1
+                bar.progress(completed / len(yuklenen_dosyalar))
+                durum.text(f"İşlenen: {completed} / {len(yuklenen_dosyalar)}")
                 
-                # Ücretsiz planı patlatmamak için minik bir fren
-                time.sleep(0.5) 
+                # Free tier için minik fren
+                time.sleep(0.5)
 
-        # --- SONUÇLARI GÖSTER ---
-        st.success("İşlem Bitti!")
+        st.success("Tamamlandı!")
         
         if tum_veriler:
             df = pd.DataFrame(tum_veriler)
-            st.write("### ✅ Başarılı İşlemler")
-            # Sütun sırası
+            st.write("### ✅ Başarılı Sonuçlar")
+            
             cols = ["dosya_adi", "isyeri_adi", "fiş_no", "tarih", "toplam_tutar", "toplam_kdv"]
             mevcut = [c for c in cols if c in df.columns]
             st.dataframe(df[mevcut], use_container_width=True)
@@ -148,8 +163,8 @@ if yuklenen_dosyalar:
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                 df.to_excel(writer, index=False)
-            st.download_button("📥 Excel İndir", data=buffer.getvalue(), file_name="turbo_muhasebe.xlsx", type="primary")
-        
+            st.download_button("📥 Excel İndir", data=buffer.getvalue(), file_name="ultimate_muhasebe.xlsx", type="primary")
+            
         if hatali_dosyalar:
-            st.error(f"{len(hatali_dosyalar)} adet dosyada hata oluştu.")
+            st.error("Bazı dosyalarda sorun oldu:")
             st.dataframe(pd.DataFrame(hatali_dosyalar))
