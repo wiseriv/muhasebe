@@ -18,7 +18,6 @@ else:
         os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = 'google_key.json'
 
 def google_vision_ile_oku(image_bytes):
-    """Görüntüyü Google'a gönderir."""
     try:
         client = vision.ImageAnnotatorClient()
         image = vision.Image(content=image_bytes)
@@ -31,14 +30,14 @@ def google_vision_ile_oku(image_bytes):
         return None
 
 def veriyi_anlamlandir(ham_metin, dosya_adi):
-    """Metinden verileri çeker."""
     veri = {
         "Dosya Adı": dosya_adi,
         "Isyeri": "Bulunamadı",
         "Tarih": "Bulunamadı",
         "Toplam_Tutar": "0.00",
         "Toplam_KDV": "0.00",
-        "Basari_Puani": 0 # Veri buldukça artacak
+        "Basari_Puani": 0,
+        "Okunan_Metin_Ozeti": ham_metin[:100].replace('\n', ' ') # Debug için
     }
     
     if not ham_metin: return veri
@@ -46,115 +45,115 @@ def veriyi_anlamlandir(ham_metin, dosya_adi):
     satirlar = ham_metin.split('\n')
     if len(satirlar) > 0: veri["Isyeri"] = satirlar[0]
 
-    # Tarih Bulma
+    # Tarih
     tarih_match = re.search(r'(\d{2}[./-]\d{2}[./-]\d{4})', ham_metin)
     if tarih_match: 
         veri["Tarih"] = tarih_match.group(1)
-        veri["Basari_Puani"] += 1 # Tarih bulduysak +1 puan
+        veri["Basari_Puani"] += 1
+
+    # --- GELİŞMİŞ FİYAT ARAMA FONKSİYONU ---
+    def para_bul(metin):
+        # * : T TL harflerini ve boşlukları temizler, rakamı çeker
+        rakamlar = re.findall(r'[*T₺:.]?\s*(\d+[.,]\d{2})', metin)
+        if rakamlar: 
+            tutar = rakamlar[-1]
+            # Temizlik
+            tutar = tutar.replace('*', '').replace('T', '').replace('₺', '').replace(':', '')
+            return tutar
+        return None
 
     for i in range(len(satirlar)):
         satir = satirlar[i]
         satir_kucuk = satir.lower()
-        
-        def para_bul(metin):
-            rakamlar = re.findall(r'[*T₺]?\s*(\d+[.,]\d{2})', metin)
-            if rakamlar: return rakamlar[-1].replace('*', '').replace('T', '').replace('₺', '')
-            return None
 
-        # TOPLAM TUTAR
+        # TOPLAM TUTAR (DERİN ARAMA MODU)
         if ("toplam" in satir_kucuk or "top" in satir_kucuk) and "kdv" not in satir_kucuk:
+            # 1. Aynı satıra bak
             bulunan = para_bul(satir)
             if bulunan: 
                 veri["Toplam_Tutar"] = bulunan
-                veri["Basari_Puani"] += 2 # Tutar bulmak çok önemli +2 puan
-            elif i + 1 < len(satirlar):
-                bulunan_alt = para_bul(satirlar[i+1])
-                if bulunan_alt: 
-                    veri["Toplam_Tutar"] = bulunan_alt
-                    veri["Basari_Puani"] += 2
+                veri["Basari_Puani"] += 2
+            
+            # 2. Eğer yoksa, ALTTAKİ 3 SATIRA KADAR BAK (Migros/Doğan Büfe fix)
+            else:
+                for j in range(1, 4): # i+1, i+2, i+3
+                    if i + j < len(satirlar):
+                        alt_satir = satirlar[i+j]
+                        bulunan_alt = para_bul(alt_satir)
+                        if bulunan_alt: 
+                            veri["Toplam_Tutar"] = bulunan_alt
+                            veri["Basari_Puani"] += 2
+                            break # Bulunca döngüden çık
 
-        # KDV
+        # KDV (DERİN ARAMA MODU)
         if "topkdv" in satir_kucuk or ("toplam" in satir_kucuk and "kdv" in satir_kucuk):
              bulunan_kdv = para_bul(satir)
              if bulunan_kdv: veri["Toplam_KDV"] = bulunan_kdv
-             elif i + 1 < len(satirlar):
-                bulunan_alt_kdv = para_bul(satirlar[i+1])
-                if bulunan_alt_kdv: veri["Toplam_KDV"] = bulunan_alt_kdv
-                
+             else:
+                for j in range(1, 4):
+                    if i + j < len(satirlar):
+                        alt_satir = satirlar[i+j]
+                        bulunan_alt_kdv = para_bul(alt_satir)
+                        if bulunan_alt_kdv: 
+                            veri["Toplam_KDV"] = bulunan_alt_kdv
+                            break
+
     return veri
 
 # --- WEB ARAYÜZÜ ---
-st.set_page_config(page_title="Mihsap Pro - Otopilot", layout="wide", page_icon="🤖")
+st.set_page_config(page_title="Mihsap Pro - V3", layout="wide", page_icon="🔥")
 
-st.title("🤖 Otopilot Fiş Okuyucu")
-st.write("Fişleri karışık (yan/düz) yükleyin, yapay zeka yönünü kendisi bulsun.")
+st.title("🔥 Otopilot V3 (Derin Arama)")
+st.write("Tüm açıları dener, satır atlamalarını yakalar.")
 
-yuklenen_dosyalar = st.file_uploader("Fişleri Yükle (Toplu Seçim Yapabilirsin)", type=['jpg', 'png', 'jpeg'], accept_multiple_files=True)
+yuklenen_dosyalar = st.file_uploader("Fişleri Yükle", type=['jpg', 'png', 'jpeg'], accept_multiple_files=True)
 
 if yuklenen_dosyalar:
-    st.info(f"{len(yuklenen_dosyalar)} adet dosya kuyruğa alındı. İşleniyor...")
+    st.info(f"{len(yuklenen_dosyalar)} dosya işleniyor...")
     tum_veriler = []
     progress_bar = st.progress(0)
-    durum_kutusu = st.empty()
     
     for i, dosya in enumerate(yuklenen_dosyalar):
-        durum_kutusu.text(f"İnceleniyor: {dosya.name}")
-        
-        # 1. Resmi Aç
         orijinal_resim = Image.open(dosya)
-        # EXIF bilgisini düzelt (Telefonun kendi döndürmesi)
         orijinal_resim = ImageOps.exif_transpose(orijinal_resim)
         
-        # --- AKILLI DÖNGÜ (AUTO-RETRY LOOP) ---
         en_iyi_veri = None
         en_yuksek_puan = -1
         
-        # Denenecek açılar: 0 (Orijinal) ve 270 (Sola yatık - en sık karşılaşılan durum)
-        # İstersen listeye 90 ve 180 de eklenebilir ama maliyeti artırır.
-        acilar = [0, 270] 
+        # YENİLİK: 90 dereceyi de ekledik!
+        acilar = [0, 270, 90] 
         
         for aci in acilar:
-            # Resmi bellekte döndür
-            if aci == 0:
-                islenen_resim = orijinal_resim
-            else:
-                islenen_resim = orijinal_resim.rotate(aci, expand=True)
+            if aci == 0: islenen_resim = orijinal_resim
+            else: islenen_resim = orijinal_resim.rotate(aci, expand=True)
             
-            # Byte'a çevir
             img_byte_arr = io.BytesIO()
-            islenen_resim.save(img_byte_arr, format='JPEG') # JPEG daha hızlı
+            islenen_resim.save(img_byte_arr, format='JPEG')
             bytes_data = img_byte_arr.getvalue()
             
-            # Google'a sor
             metin = google_vision_ile_oku(bytes_data)
             
             if metin:
                 analiz = veriyi_anlamlandir(metin, dosya.name)
                 
-                # Eğer bu denemenin puanı daha yüksekse, bunu "en iyi sonuç" olarak kaydet
+                # Puanlama sistemi en iyi sonucu seçer
                 if analiz["Basari_Puani"] > en_yuksek_puan:
                     en_yuksek_puan = analiz["Basari_Puani"]
                     en_iyi_veri = analiz
                 
-                # Eğer Tarih ve Tutar bulduysak (Puan >= 3) diğer açıları denemene gerek yok, döngüyü kır!
+                # Mükemmel sonuç (Tarih + Tutar) bulduysa dur
                 if en_yuksek_puan >= 3:
                     break
         
-        # En iyi sonucu listeye ekle
         if en_iyi_veri:
             tum_veriler.append(en_iyi_veri)
         
         progress_bar.progress((i + 1) / len(yuklenen_dosyalar))
     
-    durum_kutusu.success("✅ Bitti!")
-    
     if tum_veriler:
         df = pd.DataFrame(tum_veriler)
         
-        # Tabloda başarı puanını göstermeye gerek yok, kaldıralım
-        if "Basari_Puani" in df.columns:
-            df = df.drop(columns=["Basari_Puani"])
-            
+        # Analiz için puan sütununu gizlemiyoruz, görelim diye
         st.write("### 📊 Sonuçlar")
         st.dataframe(df, use_container_width=True)
         
@@ -162,4 +161,4 @@ if yuklenen_dosyalar:
         with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
             df.to_excel(writer, index=False)
             
-        st.download_button("📥 Excel İndir", data=buffer.getvalue(), file_name="otopilot_muhasebe.xlsx", type="primary")
+        st.download_button("📥 Excel İndir", data=buffer.getvalue(), file_name="muhasebe_v3.xlsx", type="primary")
