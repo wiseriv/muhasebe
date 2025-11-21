@@ -7,7 +7,7 @@ from PIL import Image, ImageOps
 import io
 import json
 
-# --- GÜVENLİK VE AYARLAR ---
+# --- AYARLAR ---
 if os.path.exists('google_key.json'):
     os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = 'google_key.json'
 else:
@@ -35,8 +35,7 @@ def veriyi_anlamlandir(ham_metin, dosya_adi):
         "Isyeri": "Bulunamadı",
         "Tarih": "Bulunamadı",
         "Toplam_Tutar": "0.00",
-        "Toplam_KDV": "0.00",
-        "Basari_Puani": 0
+        "Toplam_KDV": "0.00"
     }
     
     if not ham_metin: return veri
@@ -46,70 +45,80 @@ def veriyi_anlamlandir(ham_metin, dosya_adi):
 
     # Tarih
     tarih_match = re.search(r'(\d{2}[./-]\d{2}[./-]\d{4})', ham_metin)
-    if tarih_match: 
-        veri["Tarih"] = tarih_match.group(1)
-        veri["Basari_Puani"] += 1
+    if tarih_match: veri["Tarih"] = tarih_match.group(1)
 
-    # --- YENİ PARASAL FONKSİYON (Daha Basit ve Güçlü) ---
-    def rakam_temizle_ve_al(metin):
-        # Regex sadece rakam yapısına odaklanır: 10,50 veya 1.000,00 gibi
-        # Önündeki * T TL vs umursamaz, direkt rakamı cımbızlar.
+    # Rakam Temizleyici
+    def rakam_al(metin):
+        # Tüm harfleri temizle, sadece rakam ve virgül/nokta bırak
         bulunanlar = re.findall(r'(\d+[.,]\d{2})', metin)
-        if bulunanlar:
-            # En sondaki rakamı al (Genelde tutarlar en sağdadır)
-            tutar = bulunanlar[-1]
-            return tutar
-        return None
+        temiz_rakamlar = []
+        for b in bulunanlar:
+            # Virgülü noktaya çevirip float yapalım ki kıyaslayabilelim
+            try:
+                deger = float(b.replace(',', '.'))
+                temiz_rakamlar.append(deger)
+            except:
+                pass
+        return temiz_rakamlar
+
+    # --- ADAY LİSTELERİ (HAVUZ MANTIĞI) ---
+    toplam_adaylari = [] # Bulduğumuz tüm olası toplamları buraya atacağız
+    kdv_adaylari = []    # Bulduğumuz tüm olası KDV'leri buraya atacağız
 
     for i in range(len(satirlar)):
         satir = satirlar[i]
         satir_kucuk = satir.lower()
 
-        # --- TOPLAM TUTAR MANTIĞI ---
-        if ("toplam" in satir_kucuk or "top" in satir_kucuk) and "kdv" not in satir_kucuk:
+        # 1. TOPLAM ADAYLARINI TOPLA
+        # "Toplam" veya "Top" geçen her yerdeki rakamı al
+        if ("toplam" in satir_kucuk or "top" in satir_kucuk):
             
-            # STRATEJİ 1: Aynı satırda var mı? (Migros Tipi)
-            # Eğer burada bulursa, "break" yapıp çıkmaz, çünkü belki "Ara Toplam"dır.
-            # Ama değişkene atar.
-            bulunan = rakam_temizle_ve_al(satir)
+            # A) Bu satırdaki rakamlar
+            rakamlar = rakam_al(satir)
+            toplam_adaylari.extend(rakamlar)
             
-            if bulunan: 
-                veri["Toplam_Tutar"] = bulunan
-                veri["Basari_Puani"] += 2
-            
-            # STRATEJİ 2: Aynı satırda YOKSA aşağıya bak (Doğan Büfe Tipi)
-            else:
-                # Aşağıdaki 3 satıra bak
-                for j in range(1, 4):
-                    if i + j < len(satirlar):
-                        alt_satir = satirlar[i+j]
-                        bulunan_alt = rakam_temizle_ve_al(alt_satir)
-                        if bulunan_alt: 
-                            veri["Toplam_Tutar"] = bulunan_alt
-                            veri["Basari_Puani"] += 2
-                            break # Alt satırda bulduysak aramayı kes
+            # B) Bir alt satırdaki rakamlar (Doğan Büfe gibi durumlar için)
+            if i + 1 < len(satirlar):
+                rakamlar_alt = rakam_al(satirlar[i+1])
+                toplam_adaylari.extend(rakamlar_alt)
 
-        # --- KDV MANTIĞI ---
-        if "topkdv" in satir_kucuk or ("toplam" in satir_kucuk and "kdv" in satir_kucuk):
-             bulunan_kdv = rakam_temizle_ve_al(satir)
-             if bulunan_kdv: 
-                 veri["Toplam_KDV"] = bulunan_kdv
-             else:
-                for j in range(1, 4):
-                    if i + j < len(satirlar):
-                        alt_satir = satirlar[i+j]
-                        bulunan_alt_kdv = rakam_temizle_ve_al(alt_satir)
-                        if bulunan_alt_kdv: 
-                            veri["Toplam_KDV"] = bulunan_alt_kdv
-                            break
+        # 2. KDV ADAYLARINI TOPLA
+        if "kdv" in satir_kucuk:
+             rakamlar_kdv = rakam_al(satir)
+             kdv_adaylari.extend(rakamlar_kdv)
+             
+             if i + 1 < len(satirlar):
+                 rakamlar_alt_kdv = rakam_al(satirlar[i+1])
+                 kdv_adaylari.extend(rakamlar_alt_kdv)
+
+    # --- KARAR MEKANİZMASI ---
+    
+    # Toplam Tutar: Adaylar içindeki EN BÜYÜK rakam (Matematiksel Kesinlik)
+    if toplam_adaylari:
+        en_buyuk_tutar = max(toplam_adaylari)
+        veri["Toplam_Tutar"] = f"{en_buyuk_tutar:.2f}"
+        
+        # KDV Mantığı: Eğer KDV adayımız varsa onu al
+        # Eğer KDV adayımız Toplam Tutara eşitse (Hata varsa), ikinci en büyüğü al
+        if kdv_adaylari:
+            en_buyuk_kdv = max(kdv_adaylari)
+            
+            # Eğer bulduğumuz KDV, Toplam Tutar ile aynıysa (yanlışlıkla aynı satırı okuduysa)
+            if en_buyuk_kdv == en_buyuk_tutar and len(kdv_adaylari) > 1:
+                # Listeden en büyüğü çıkar, kalanların en büyüğünü al
+                kdv_adaylari.remove(en_buyuk_kdv)
+                en_buyuk_kdv = max(kdv_adaylari)
+            
+            # KDV asla Toplamdan büyük olamaz, eğer öyleyse KDV 0'dır veya hatadır
+            if en_buyuk_kdv < en_buyuk_tutar:
+                veri["Toplam_KDV"] = f"{en_buyuk_kdv:.2f}"
 
     return veri
 
 # --- WEB ARAYÜZÜ ---
-st.set_page_config(page_title="Mihsap Pro - V4 Hibrit", layout="wide", page_icon="💎")
-
-st.title("💎 Mihsap Klonu V4 (Hibrit Motor)")
-st.write("Hem bitişik (Migros) hem ayrık (Doğan Büfe) formatları destekler.")
+st.set_page_config(page_title="Mihsap Pro - Akıllı Analiz", layout="wide", page_icon="🧠")
+st.title("🧠 Akıllı Fiş Analizi (V5)")
+st.info("Matematiksel doğrulama modu devrede. Fişteki en büyük rakam Toplam kabul edilir.")
 
 yuklenen_dosyalar = st.file_uploader("Fişleri Yükle", type=['jpg', 'png', 'jpeg'], accept_multiple_files=True)
 
@@ -118,33 +127,38 @@ if yuklenen_dosyalar:
     progress_bar = st.progress(0)
     
     for i, dosya in enumerate(yuklenen_dosyalar):
-        orijinal_resim = Image.open(dosya)
-        orijinal_resim = ImageOps.exif_transpose(orijinal_resim)
+        # Görüntü işleme
+        img = Image.open(dosya)
+        img = ImageOps.exif_transpose(img)
         
+        # Otopilot (Açı Deneme)
         en_iyi_veri = None
-        en_yuksek_puan = -1
+        max_toplam = -1.0
         
-        # Tüm açıları dene
-        acilar = [0, 270, 90] 
-        
-        for aci in acilar:
-            if aci == 0: islenen_resim = orijinal_resim
-            else: islenen_resim = orijinal_resim.rotate(aci, expand=True)
+        # 0 ve 270 derece dene (En sık karşılaşılanlar)
+        for aci in [0, 270, 90]:
+            if aci == 0: work_img = img
+            else: work_img = img.rotate(aci, expand=True)
             
-            img_byte_arr = io.BytesIO()
-            islenen_resim.save(img_byte_arr, format='JPEG')
-            metin = google_vision_ile_oku(img_byte_arr.getvalue())
+            buf = io.BytesIO()
+            work_img.save(buf, format='JPEG')
+            
+            metin = google_vision_ile_oku(buf.getvalue())
             
             if metin:
                 analiz = veriyi_anlamlandir(metin, dosya.name)
                 
-                if analiz["Basari_Puani"] > en_yuksek_puan:
-                    en_yuksek_puan = analiz["Basari_Puani"]
-                    en_iyi_veri = analiz
+                # Hangi açı daha büyük bir "Toplam Tutar" bulduysa onu doğru kabul et
+                # Çünkü yanlış okumalarda genelde rakam bulamaz veya küçük parçalar bulur.
+                try:
+                    bulunan_tutar = float(analiz["Toplam_Tutar"])
+                except:
+                    bulunan_tutar = 0
                 
-                if en_yuksek_puan >= 3:
-                    break
-        
+                if bulunan_tutar > max_toplam:
+                    max_toplam = bulunan_tutar
+                    en_iyi_veri = analiz
+
         if en_iyi_veri:
             tum_veriler.append(en_iyi_veri)
         
@@ -152,12 +166,10 @@ if yuklenen_dosyalar:
     
     if tum_veriler:
         df = pd.DataFrame(tum_veriler)
-        
         st.write("### 📊 Sonuçlar")
         st.dataframe(df, use_container_width=True)
         
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
             df.to_excel(writer, index=False)
-            
-        st.download_button("📥 Excel İndir", data=buffer.getvalue(), file_name="muhasebe_final.xlsx", type="primary")
+        st.download_button("📥 Excel İndir", data=buffer.getvalue(), file_name="muhasebe_smart.xlsx", type="primary")
