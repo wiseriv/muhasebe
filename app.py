@@ -78,7 +78,7 @@ def muhasebe_fisne_cevir(df_ham):
         except: continue
     return pd.DataFrame(yevmiye)
 
-# --- 4. SHEETS ---
+# --- 4. SHEETS (GÜÇLENDİRİLMİŞ BAĞLANTI) ---
 @st.cache_resource
 def sheets_baglantisi_kur():
     if "gcp_service_account" not in st.secrets: return None
@@ -86,7 +86,9 @@ def sheets_baglantisi_kur():
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         creds = ServiceAccountCredentials.from_json_keyfile_dict(dict(st.secrets["gcp_service_account"]), scope)
         return gspread.authorize(creds)
-    except: return None
+    except Exception as e: 
+        st.error(f"Bağlantı Hatası: {e}")
+        return None
 
 def musteri_listesini_getir():
     client = sheets_baglantisi_kur()
@@ -94,19 +96,25 @@ def musteri_listesini_getir():
     try:
         sheet = client.open("Muhabese Veritabanı")
         try: ws = sheet.worksheet("Musteriler")
-        except: ws = sheet.add_worksheet("Musteriler", 100, 2); ws.append_row(["Müşteri", "Tarih"]); ws.append_row(["Varsayılan Müşteri", str(datetime.now())])
+        except: 
+            ws = sheet.add_worksheet("Musteriler", 100, 2)
+            ws.append_row(["Müşteri", "Tarih"])
+            ws.append_row(["Varsayılan Müşteri", str(datetime.now())])
         return ws.col_values(1)[1:] or ["Varsayılan Müşteri"]
     except: return ["Varsayılan Müşteri"]
 
 def yeni_musteri_ekle(ad):
     client = sheets_baglantisi_kur()
-    if not client: return False
+    if not client: return "Bağlantı Yok"
     try:
         sheet = client.open("Muhabese Veritabanı")
         ws = sheet.worksheet("Musteriler")
         if ad in ws.col_values(1): return "Mevcut"
         ws.append_row([ad, str(datetime.now())])
-        try: sheet.add_worksheet(ad, 1000, 10).append_row(["Dosya", "İşyeri", "Fiş No", "Tarih", "Kategori", "Tutar", "KDV", "Zaman", "Durum", "QR"])
+        try:
+            # Yeni sekme aç ve başlıkları yaz
+            ns = sheet.add_worksheet(ad, 1000, 12)
+            ns.append_row(["Dosya Adı", "İşyeri", "Fiş No", "Tarih", "Kategori", "Tutar", "KDV", "Zaman", "Durum", "QR"])
         except: pass
         return True
     except Exception as e: return str(e)
@@ -126,24 +134,39 @@ def musteri_sil(ad):
 
 def sheete_kaydet(veri, musteri):
     client = sheets_baglantisi_kur()
-    if not client: return False
+    if not client: 
+        st.error("Google Sheets bağlantısı kurulamadı.")
+        return False
     try:
         sheet = client.open("Muhabese Veritabanı")
         try: ws = sheet.worksheet(musteri)
-        except: ws = sheet.add_worksheet(musteri, 1000, 10)
+        except: 
+            ws = sheet.add_worksheet(musteri, 1000, 12)
+            ws.append_row(["Dosya Adı", "İşyeri", "Fiş No", "Tarih", "Kategori", "Tutar", "KDV", "Zaman", "Durum", "QR"])
+        
         rows = []
         for v in veri:
             durum = "✅" if float(str(v.get('toplam_tutar',0)).replace(',','.')) > 0 else "⚠️"
+            qr_durumu = "📱QR" if v.get("qr_gecerli") else "-"
             
-            # QR DURUMU GÜNCELLEMESİ
-            # Artık hem Python'un hem Gemini'nin bulduğu QR'a bakıyoruz
-            qr_var_mi = v.get("qr_gecerli") or (v.get("qr_icerigi") and len(v.get("qr_icerigi")) > 5)
-            qr_durumu = "📱QR" if qr_var_mi else "-"
-            
-            rows.append([v.get("dosya_adi"), v.get("isyeri_adi"), v.get("fiş_no"), v.get("tarih"), v.get("kategori", "Diğer"), str(v.get("toplam_tutar", "0")), str(v.get("toplam_kdv", "0")), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), durum, qr_durumu])
+            rows.append([
+                v.get("dosya_adi", "-"), 
+                v.get("isyeri_adi", "-"), 
+                v.get("fiş_no", "-"), 
+                v.get("tarih", "-"), 
+                v.get("kategori", "Diğer"), 
+                str(v.get("toplam_tutar", "0")), 
+                str(v.get("toplam_kdv", "0")), 
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
+                durum, 
+                qr_durumu
+            ])
+        
         ws.append_rows(rows)
         return True
-    except: return False
+    except Exception as e:
+        st.error(f"Kayıt Başarısız! Hata: {e}")
+        return False
 
 def sheetten_veri_cek(musteri):
     client = sheets_baglantisi_kur()
@@ -178,7 +201,6 @@ def qr_kodu_oku_ve_filtrele(image_bytes):
         decoded_objects = decode(img)
         for obj in decoded_objects:
             raw_data = obj.data.decode("utf-8")
-            # Filtreyi biraz gevşettik
             if len(raw_data) > 10: return raw_data 
             else: continue
         return None
@@ -196,27 +218,20 @@ def dosyayi_hazirla(uploaded_file):
 
 def gemini_ile_analiz_et(dosya_objesi, secilen_model, mod="fis"):
     try:
-        qr_data_python = None
-        # Python sadece resimlerde QR arar
+        qr_data = None
         if dosya_objesi.type != "application/pdf":
-            qr_data_python = qr_kodu_oku_ve_filtrele(dosya_objesi.getvalue())
+            qr_data = qr_kodu_oku_ve_filtrele(dosya_objesi.getvalue())
         
         base64_data, mime_type = dosyayi_hazirla(dosya_objesi)
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{secilen_model}:generateContent?key={API_KEY}"
         headers = {'Content-Type': 'application/json'}
         
-        qr_bilgisi = f"\n[İPUCU]: Python QR kodu buldu: '{qr_data_python}'" if qr_data_python else ""
+        qr_bilgisi = f"\n[İPUCU]: QR kod bulundu: '{qr_data}'" if qr_data else ""
 
         if mod == "fis":
-            # --- PROMPT GÜNCELLENDİ: GEMINI'YE "SEN DE QR ARA" DEDİK ---
             prompt = f"""Bu belgeyi analiz et. {qr_bilgisi}
-            
-            GÖREVLER:
-            1. Belgede veya kenarlarda QR Kod var mı? Varsa içindeki metni oku ve 'qr_icerigi' alanına yaz. (Özellikle PDF ise sen okumalısın).
-            2. Kategori: Firma adına aldanma, ürüne bak (Örn: Ofel Turizm -> Kitap -> Kırtasiye).
-            
-            JSON Formatı:
-            {{"isyeri_adi": "...", "fiş_no": "...", "tarih": "GG.AA.YYYY", "kategori": "...", "toplam_tutar": "0.00", "toplam_kdv": "0.00", "qr_icerigi": "..."}}
+            JSON: {{"isyeri_adi": "...", "fiş_no": "...", "tarih": "GG.AA.YYYY", "kategori": "Gıda/Akaryakıt/Kırtasiye/Teknoloji/Konaklama/Diğer", "toplam_tutar": "0.00", "toplam_kdv": "0.00"}}
+            Tarih formatı Gün.Ay.Yıl olsun.
             """
         else:
             prompt = """Kredi kartı ekstresi satırları. JSON Liste: [{"isyeri_adi": "...", "tarih": "GG.AA.YYYY", "kategori": "...", "toplam_tutar": "0.00", "toplam_kdv": "0"}, ...]"""
@@ -235,17 +250,7 @@ def gemini_ile_analiz_et(dosya_objesi, secilen_model, mod="fis"):
             return veri
         else:
             veri["dosya_adi"] = dosya_objesi.name
-            
-            # --- KRİTİK KONTROL: QR VAR MI? ---
-            # 1. Python buldu mu? VEYA 2. Gemini buldu mu?
-            gemini_qr = veri.get("qr_icerigi", "")
-            if qr_data_python:
-                veri["qr_gecerli"] = True
-            elif gemini_qr and len(str(gemini_qr)) > 5: # Gemini bir şey bulmuşsa
-                veri["qr_gecerli"] = True
-            else:
-                veri["qr_gecerli"] = False
-                
+            veri["qr_gecerli"] = True if qr_data else False
             veri["_ham_dosya"] = dosya_objesi.getvalue()
             veri["_dosya_turu"] = "pdf" if mime_type == "application/pdf" else "jpg"
             return veri
@@ -287,6 +292,7 @@ with st.sidebar:
     modeller = modelleri_getir()
     model = st.selectbox("AI Modeli", modeller) if modeller else "gemini-1.5-flash"
     hiz = st.slider("Hız", 1, 5, 3)
+    
     if st.button("❌ Temizle"):
         st.session_state['uploader_key'] += 1
         if 'analiz_sonuclari' in st.session_state: del st.session_state['analiz_sonuclari']
@@ -311,6 +317,7 @@ with t1:
                     r = f.result()
                     if "hata" not in r: tum.append(r)
                     bar.progress(100)
+        
         if ekstre:
             with st.spinner("Ekstre okunuyor..."):
                 for d in ekstre:
@@ -318,10 +325,15 @@ with t1:
                     if isinstance(r, list): tum.extend(r)
         
         if tum:
-            st.session_state['analiz_sonuclari'] = tum
-            sheete_kaydet(tum, secili)
-            st.success(f"✅ {len(tum)} kayıt işlendi.")
+            st.session_state['analiz_sonuclari'] = tum # Veriyi hafızaya at
+            
+            # KAYIT VE GERİ BİLDİRİM
+            if sheete_kaydet(tum, secili):
+                st.success(f"✅ {len(tum)} kayıt başarıyla veritabanına işlendi!")
+            else:
+                st.error("⚠️ Veriler okundu ama Sheets'e kaydedilemedi. Hata yukarıda.")
 
+    # SONUÇLARI GÖSTER (Hafızadan okur)
     if 'analiz_sonuclari' in st.session_state:
         dt = st.session_state['analiz_sonuclari']
         df = pd.DataFrame(dt)
