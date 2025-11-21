@@ -18,14 +18,14 @@ import cv2
 import numpy as np
 
 # --- 1. AYARLAR ---
-st.set_page_config(page_title="Mihsap AI", layout="wide", page_icon="🏢")
+st.set_page_config(page_title="Muhabese AI", layout="wide", page_icon="🏢")
 
 def giris_kontrol():
     if 'giris_yapildi' not in st.session_state: st.session_state['giris_yapildi'] = False
     if not st.session_state['giris_yapildi']:
         c1, c2, c3 = st.columns([1,2,1])
         with c2:
-            st.markdown("## 🔐 Mihsap AI | Giriş")
+            st.markdown("## 🔐 Muhabese AI | Giriş")
             with st.form("login"):
                 sifre = st.text_input("Şifre", type="password")
                 if st.form_submit_button("Giriş"):
@@ -92,7 +92,8 @@ def musteri_listesini_getir():
     client = sheets_baglantisi_kur()
     if not client: return ["Varsayılan Müşteri"]
     try:
-        sheet = client.open("Mihsap Veritabanı")
+        # Veritabanı adı değişti: Muhabese Veritabanı
+        sheet = client.open("Muhabese Veritabanı")
         try: ws = sheet.worksheet("Musteriler")
         except: ws = sheet.add_worksheet("Musteriler", 100, 2); ws.append_row(["Müşteri", "Tarih"]); ws.append_row(["Varsayılan Müşteri", str(datetime.now())])
         return ws.col_values(1)[1:] or ["Varsayılan Müşteri"]
@@ -102,7 +103,7 @@ def yeni_musteri_ekle(ad):
     client = sheets_baglantisi_kur()
     if not client: return False
     try:
-        sheet = client.open("Mihsap Veritabanı")
+        sheet = client.open("Muhabese Veritabanı")
         ws = sheet.worksheet("Musteriler")
         if ad in ws.col_values(1): return "Mevcut"
         ws.append_row([ad, str(datetime.now())])
@@ -115,7 +116,7 @@ def musteri_sil(ad):
     client = sheets_baglantisi_kur()
     if not client: return False
     try:
-        sheet = client.open("Mihsap Veritabanı")
+        sheet = client.open("Muhabese Veritabanı")
         ws = sheet.worksheet("Musteriler")
         cell = ws.find(ad)
         if cell: ws.delete_rows(cell.row)
@@ -128,13 +129,12 @@ def sheete_kaydet(veri, musteri):
     client = sheets_baglantisi_kur()
     if not client: return False
     try:
-        sheet = client.open("Mihsap Veritabanı")
+        sheet = client.open("Muhabese Veritabanı")
         try: ws = sheet.worksheet(musteri)
         except: ws = sheet.add_worksheet(musteri, 1000, 10)
         rows = []
         for v in veri:
             durum = "✅" if float(str(v.get('toplam_tutar',0)).replace(',','.')) > 0 else "⚠️"
-            # QR durumunu rapora ekle (Geçerli QR bulunduysa ikon koy)
             qr_durumu = "📱QR" if v.get("qr_gecerli") else "-"
             rows.append([v.get("dosya_adi"), v.get("isyeri_adi"), v.get("fiş_no"), v.get("tarih"), v.get("kategori", "Diğer"), str(v.get("toplam_tutar", "0")), str(v.get("toplam_kdv", "0")), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), durum, qr_durumu])
         ws.append_rows(rows)
@@ -145,7 +145,7 @@ def sheetten_veri_cek(musteri):
     client = sheets_baglantisi_kur()
     if not client: return pd.DataFrame()
     try:
-        sheet = client.open("Mihsap Veritabanı")
+        sheet = client.open("Muhabese Veritabanı")
         ws = sheet.worksheet(musteri)
         data = ws.get_all_records()
         if not data: return pd.DataFrame()
@@ -156,7 +156,7 @@ def sheetten_veri_cek(musteri):
         return df
     except: return pd.DataFrame()
 
-# --- 5. GEMINI & QR (AKILLI FİLTRE) ---
+# --- 5. GEMINI & QR ---
 @st.cache_data
 def modelleri_getir():
     url = f"https://generativelanguage.googleapis.com/v1beta/models?key={API_KEY}"
@@ -168,26 +168,14 @@ def modelleri_getir():
     except: return []
 
 def qr_kodu_oku_ve_filtrele(image_bytes):
-    """QR okur ve çöp olup olmadığına bakar."""
     try:
         nparr = np.frombuffer(image_bytes, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         decoded_objects = decode(img)
-        
         for obj in decoded_objects:
             raw_data = obj.data.decode("utf-8")
-            
-            # --- QR BEKÇİSİ (FİLTRE) ---
-            # GİB QR'ları genelde uzundur veya URL içerir veya VKN ile başlar
-            # Petrol fişlerindeki kısa teknik kodları eliyoruz
-            
-            if "http" in raw_data or "vkno" in raw_data.lower() or len(raw_data) > 50:
-                return raw_data # Geçerli kabul et
-            else:
-                # Geçersiz QR (Muhtemelen pompa kodu vs)
-                # İstersen loglayabilirsin ama şimdilik görmezden geliyoruz
-                continue
-                
+            if "http" in raw_data or "vkno" in raw_data.lower() or len(raw_data) > 50: return raw_data 
+            else: continue
         return None
     except: return None
 
@@ -203,12 +191,10 @@ def dosyayi_hazirla(uploaded_file):
 
 def gemini_ile_analiz_et(dosya_objesi, secilen_model, mod="fis"):
     try:
-        # 1. QR KONTROL (Sadece Resimler İçin Python Bakar)
         qr_data = None
         if dosya_objesi.type != "application/pdf":
             qr_data = qr_kodu_oku_ve_filtrele(dosya_objesi.getvalue())
         
-        # 2. GEMINI ANALİZİ
         base64_data, mime_type = dosyayi_hazirla(dosya_objesi)
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{secilen_model}:generateContent?key={API_KEY}"
         headers = {'Content-Type': 'application/json'}
@@ -218,15 +204,16 @@ def gemini_ile_analiz_et(dosya_objesi, secilen_model, mod="fis"):
             qr_bilgisi = f"\n[İPUCU]: Belgede resmi bir QR kod bulundu: '{qr_data}'. Eğer içinde tutar/tarih varsa bunu kullan."
 
         if mod == "fis":
-            # --- GÜÇLENDİRİLMİŞ PROMPT ---
-            prompt = f"""Bu belgeyi analiz et. {qr_bilgisi}
+            prompt = f"""Bu belgeyi bir Mali Müşavir hassasiyetiyle analiz et. {qr_bilgisi}
+            GÖREVİN: Harcamanın gerçek "Kategori"sini bulmak.
             
-            DİKKAT: "Kategori"yi seçerken Firma Adına ALDANMA. Satılan ÜRÜNLERE bak.
-            - Firma adında "Turizm" geçse bile, satılan "Kitap" ise kategori "Kırtasiye"dir.
-            - "Petrol" istasyonunda "Market" alışverişi yapıldıysa (Çikolata vs) kategori "Gıda"dır.
+            DİKKAT ETMEN GEREKEN TUZAKLAR:
+            1. Firma Adına Aldanma: "Ofel Turizm" yazabilir ama logo "HepEğitim" ise ve ürün "Alice" ise bu bir KİTAPTIR (Kırtasiye).
+            2. Vergi Kodlarına Bak: Faturanın altında "13/n Maddesi" veya "KDV İstisnası" yazıyorsa bu genellikle Kitap/Yayın demektir.
+            3. Ürün Adını Yorumla: "Alice" bir kitap ismidir. "Benzin", "Motorin" akaryakıttır. "Adana Kebap" gıdadır.
             
-            JSON Formatı:
-            {{"isyeri_adi": "...", "fiş_no": "...", "tarih": "GG.AA.YYYY", "kategori": "Gıda/Akaryakıt/Kırtasiye/Teknoloji/Konaklama/Diğer", "toplam_tutar": "0.00", "toplam_kdv": "0.00"}}
+            JSON: {{"isyeri_adi": "...", "fiş_no": "...", "tarih": "GG.AA.YYYY", "kategori": "Gıda/Akaryakıt/Kırtasiye/Teknoloji/Konaklama/Diğer", "toplam_tutar": "0.00", "toplam_kdv": "0.00"}}
+            Tarih formatı Gün.Ay.Yıl olsun.
             """
         else:
             prompt = """Kredi kartı ekstresi satırları. JSON Liste: [{"isyeri_adi": "...", "tarih": "GG.AA.YYYY", "kategori": "...", "toplam_tutar": "0.00", "toplam_kdv": "0"}, ...]"""
@@ -245,11 +232,10 @@ def gemini_ile_analiz_et(dosya_objesi, secilen_model, mod="fis"):
             return veri
         else:
             veri["dosya_adi"] = dosya_objesi.name
-            veri["qr_gecerli"] = True if qr_data else False # Raporda göstermek için
+            veri["qr_gecerli"] = True if qr_data else False
             veri["_ham_dosya"] = dosya_objesi.getvalue()
             veri["_dosya_turu"] = "pdf" if mime_type == "application/pdf" else "jpg"
             return veri
-            
     except Exception as e: return {"hata": str(e)}
 
 def arsiv_olustur(veri_listesi):
@@ -258,17 +244,17 @@ def arsiv_olustur(veri_listesi):
         for veri in veri_listesi:
             if "_ham_dosya" in veri:
                 try:
-                    tarih_str = veri.get("tarih", "00.00.0000").replace("/", ".").replace("-", ".")
+                    tarih = veri.get("tarih", "00.00.0000").replace("/", ".").replace("-", ".")
                     yer = "".join([c for c in veri.get("isyeri_adi","").upper() if c.isalnum()])[:10]
                     tutar = str(veri.get("toplam_tutar", "0")).replace(".", ",")
-                    yeni_ad = f"{tarih_str}_{yer}_{tutar}TL.{veri.get('_dosya_turu','jpg')}"
-                    zip_file.writestr(yeni_ad, veri["_ham_dosya"])
+                    ad = f"{tarih}_{yer}_{tutar}TL.{veri.get('_dosya_turu','jpg')}"
+                    zip_file.writestr(ad, veri["_ham_dosya"])
                 except: zip_file.writestr(f"HATA_{veri.get('dosya_adi')}", veri["_ham_dosya"])
     return zip_buffer.getvalue()
 
 # --- 6. ARAYÜZ ---
 with st.sidebar:
-    st.title("🏢 Mihsap Enterprise")
+    st.title("🏢 Muhabese AI")
     
     st.markdown("### 👥 Müşteri")
     musteriler = musteri_listesini_getir()
@@ -330,7 +316,7 @@ with t1:
     if 'analiz_sonuclari' in st.session_state:
         dt = st.session_state['analiz_sonuclari']
         df = pd.DataFrame(dt)
-        st.dataframe(df.drop(columns=["_ham_dosya", "_dosya_turu"], errors='ignore'), use_container_width=True)
+        st.dataframe(df.drop(columns=["_ham_dosya", "_dosya_turu", "qr_data"], errors='ignore'), use_container_width=True)
         
         col1, col2 = st.columns(2)
         with col1: st.download_button("📦 ZIP Arşiv", arsiv_olustur(dt), f"{secili}_arsiv.zip", "application/zip")
