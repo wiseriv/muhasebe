@@ -129,4 +129,58 @@ def gemini_ile_analiz_et(dosya_objesi, secilen_model):
                         "toplam_tutar": "00.00",
                         "toplam_kdv": "00.00"
                     }"""},
-                    {"inline_data": {"mime_type": "image/jpeg", "data": base64_image
+                    {"inline_data": {"mime_type": "image/jpeg", "data": base64_image}}
+                ]
+            }]
+        }
+        response = requests.post(url, headers=headers, json=payload)
+        if response.status_code != 200: return {"dosya_adi": dosya_adi, "hata": f"Hata ({response.status_code})"}
+        
+        metin = response.json()['candidates'][0]['content']['parts'][0]['text']
+        metin = metin.replace("```json", "").replace("```", "").strip()
+        veri = json.loads(metin)
+        veri["dosya_adi"] = dosya_adi
+        return veri
+    except Exception as e:
+        return {"dosya_adi": dosya_adi, "hata": str(e)}
+
+# --- ARAYÜZ ---
+with st.sidebar:
+    st.header("⚙️ Ayarlar")
+    mevcut_modeller = modelleri_getir()
+    secilen_model = st.selectbox("Model", mevcut_modeller, index=0) if mevcut_modeller else "gemini-1.5-flash"
+    isci_sayisi = st.slider("Hız", 1, 5, 3)
+
+st.title("🗃️ Mihsap AI - Veritabanı Modu")
+
+yuklenen_dosyalar = st.file_uploader("Fişleri Yükle", type=['jpg', 'png', 'jpeg'], accept_multiple_files=True)
+
+if yuklenen_dosyalar:
+    if st.button("🚀 Başlat ve Kaydet"):
+        tum_veriler = []
+        bar = st.progress(0)
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=isci_sayisi) as executor:
+            future_to_file = {executor.submit(gemini_ile_analiz_et, d, secilen_model): d for d in yuklenen_dosyalar}
+            completed = 0
+            for future in concurrent.futures.as_completed(future_to_file):
+                sonuc = future.result()
+                if "hata" not in sonuc:
+                    tum_veriler.append(sonuc)
+                completed += 1
+                bar.progress(completed / len(yuklenen_dosyalar))
+                time.sleep(0.5)
+
+        if tum_veriler:
+            st.write("### 📊 Analiz Sonuçları")
+            df = pd.DataFrame(tum_veriler)
+            st.dataframe(df, use_container_width=True)
+            
+            # --- KAYIT İŞLEMİ ---
+            with st.spinner("Veritabanına bağlanılıyor..."):
+                basari = sheete_kaydet(tum_veriler)
+            
+            if basari:
+                st.success("✅ BÜYÜK BAŞARI! Veriler Google Sheets'e kaydedildi.")
+            else:
+                st.error("❌ Kayıt başarısız oldu. Lütfen yukarıdaki hata mesajını oku.")
