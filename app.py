@@ -156,14 +156,27 @@ def sheetten_veri_cek(musteri):
     except: return pd.DataFrame()
 
 # --- 5. GEMINI & QR ---
-# 🔥 MANUEL MODELLER: ARTIK GOOGLE'A SORMAK YOK, BİZ SÖYLÜYORUZ 🔥
+# 🔥 DİNAMİK MODEL SEÇİCİ (YENİ) 🔥
+@st.cache_data
 def modelleri_getir():
-    return [
-        "gemini-1.5-flash",      # En Kararlı ve Yüksek Kotalı
-        "gemini-1.5-pro",        # Daha Zeki
-        "gemini-2.5-flash",      # Yeni Hızlı
-        "gemini-2.0-flash-exp"   # Deneysel (Dikkat: Düşük Kota)
-    ]
+    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={API_KEY}"
+    try:
+        response = requests.get(url)
+        data = response.json()
+        tum_modeller = []
+        if 'models' in data:
+            for m in data['models']:
+                if 'generateContent' in m.get('supportedGenerationMethods', []):
+                    ad = m['name'].replace("models/", "")
+                    tum_modeller.append(ad)
+        
+        # Hiyerarşi: 2.5 > 2.0 > 1.5
+        f25 = [m for m in tum_modeller if "2.5-flash" in m]
+        f20 = [m for m in tum_modeller if "2.0-flash" in m]
+        f15 = [m for m in tum_modeller if "1.5-flash" in m]
+        return f25 + f20 + f15
+    except: 
+        return ["gemini-2.5-flash"] # Fallback
 
 def qr_kodu_oku_ve_filtrele(image_bytes):
     try:
@@ -269,11 +282,16 @@ with st.sidebar:
             st.success("Silindi!"); time.sleep(1); st.rerun()
 
     st.divider()
-    # MANUEL MODELLERİ KULLAN
-    model = st.selectbox("AI Modeli", modelleri_getir(), index=0)
     
-    # HIZ SLIDER'I
-    hiz = st.slider("Paralel İşlem", 1, 20, 5) 
+    # DİNAMİK MODEL SEÇİMİ
+    modeller = modelleri_getir()
+    if modeller:
+        model = st.selectbox("AI Modeli", modeller, index=0)
+        st.caption(f"Aktif: {model}")
+    else:
+        model = st.text_input("Model Adı (Manuel)", "gemini-1.5-flash")
+    
+    hiz = st.slider("Paralel İşlem", 1, 20, 10) 
     
     if st.button("❌ Temizle"):
         st.session_state['uploader_key'] += 1
