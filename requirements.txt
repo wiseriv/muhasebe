@@ -6,3 +6,6 @@ Pillow
 gspread
 oauth2client
 plotly
+pyzbar
+opencv-python-headless
+numpy
