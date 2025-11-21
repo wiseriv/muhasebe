@@ -15,18 +15,6 @@ try:
 except Exception as e:
     st.error(f"API Anahtarı Hatası: {e}")
 
-# --- MODEL SEÇİCİ (HATA AYIKLAMA İÇİN) ---
-def get_available_models():
-    """Kullanılabilir modelleri listeler."""
-    try:
-        models = []
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                models.append(m.name)
-        return models
-    except:
-        return ["Modeller listelenemedi"]
-
 def gemini_ile_analiz_et(image_bytes, model_adi):
     """Seçilen model ile analiz yapar."""
     try:
@@ -36,51 +24,56 @@ def gemini_ile_analiz_et(image_bytes, model_adi):
         image_parts = [{"mime_type": "image/jpeg", "data": image_bytes}]
 
         prompt = """
-        Bu fiş görüntüsünü analiz et. Yan veya ters olsa bile düzeltip oku.
-        Aşağıdaki formatta saf JSON verisi çıkar:
+        Bu fiş görüntüsünü analiz et.
+        Aşağıdaki formatta saf JSON verisi çıkar (Markdown kullanma):
         {
             "isyeri_adi": "İşyeri Adı",
             "tarih": "GG.AA.YYYY",
             "toplam_tutar": "00.00",
             "toplam_kdv": "00.00"
         }
-        Sadece JSON döndür.
         """
 
         response = model.generate_content([prompt, image_parts[0]])
         
         text = response.text.strip()
+        # Markdown temizliği
         if text.startswith("```json"): text = text[7:-3]
         if text.startswith("```"): text = text[3:-3]
         
         return json.loads(text)
 
     except Exception as e:
-        st.error(f"Model Hatası ({model_adi}): {e}")
+        st.error(f"Model ({model_adi}) bu isteği yapamadı. Hata: {e}")
         return None
 
 # --- WEB ARAYÜZÜ ---
-st.set_page_config(page_title="Mihsap AI", layout="wide", page_icon="🧠")
+st.set_page_config(page_title="Mihsap AI - Final", layout="wide", page_icon="🧠")
 
-# Kenar Çubuğu (Ayarlar)
+# --- SOL MENÜ (AYARLAR) ---
 with st.sidebar:
-    st.header("⚙️ Model Ayarları")
-    mevcut_modeller = get_available_models()
+    st.header("🛠️ Motor Ayarları")
     
-    # Eğer liste boşsa manuel ekle
-    if not mevcut_modeller:
-        mevcut_modeller = ["models/gemini-1.5-flash", "models/gemini-pro-vision"]
+    # Modelleri biz elle yazıyoruz, Google'a sormuyoruz
+    secenekler = [
+        "models/gemini-1.5-flash",      # En hızlı ve ucuz
+        "models/gemini-1.5-pro",        # En zeki
+        "models/gemini-pro-vision",     # Eski ama sağlam
+        "Manuel Giriş Yap"              # Listede olmayan bir şey denemek için
+    ]
     
-    # Kullanıcıya model seçtir (Hata olursa değiştirebilsin diye)
-    secilen_model = st.selectbox(
-        "Kullanılacak Model", 
-        mevcut_modeller, 
-        index=0 if "models/gemini-1.5-flash" in mevcut_modeller else 0
-    )
-    st.info(f"Şu an kullanılan: {secilen_model}")
+    secim = st.selectbox("Kullanılacak Yapay Zeka Modeli", secenekler)
+    
+    final_model_adi = secim
+    if secim == "Manuel Giriş Yap":
+        final_model_adi = st.text_input("Model Adını Yaz", "models/gemini-1.5-flash-latest")
+    
+    st.info(f"Şu an seçili: {final_model_adi}")
+    st.warning("Not: Eğer hata alırsan listeden diğer modelleri dene.")
 
-st.title("🧠 Mihsap AI (Gemini)")
-st.write("Google'ın en yeni yapay zekası ile fiş analizi.")
+# --- ANA EKRAN ---
+st.title("🧠 Mihsap AI (Zeka Modu)")
+st.write("Fişinizi yükleyin, Gemini 1.5 Flash analiz etsin.")
 
 yuklenen_dosyalar = st.file_uploader("Fişleri Yükle", type=['jpg', 'png', 'jpeg'], accept_multiple_files=True)
 
@@ -94,7 +87,7 @@ if yuklenen_dosyalar:
         image.save(img_byte_arr, format='JPEG')
         
         # Seçilen model ile analiz et
-        sonuc = gemini_ile_analiz_et(img_byte_arr.getvalue(), secilen_model)
+        sonuc = gemini_ile_analiz_et(img_byte_arr.getvalue(), final_model_adi)
         
         if sonuc:
             sonuc["dosya_adi"] = dosya.name
@@ -104,6 +97,16 @@ if yuklenen_dosyalar:
     
     if tum_veriler:
         df = pd.DataFrame(tum_veriler)
+        
+        # Sütun sırası
         cols = ["dosya_adi", "isyeri_adi", "tarih", "toplam_tutar", "toplam_kdv"]
-        mevcut_cols = [c for c in cols if c in df.columns]
-        st.dataframe(df[mevcut_cols], use_container_width=True)
+        mevcut = [c for c in cols if c in df.columns]
+        
+        st.write("### 📊 Sonuçlar")
+        st.dataframe(df[mevcut], use_container_width=True)
+        
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False)
+            
+        st.download_button("📥 Excel İndir", data=buffer.getvalue(), file_name="ai_muhasebe_final.xlsx", type="primary")
