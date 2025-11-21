@@ -18,17 +18,26 @@ import zipfile
 st.set_page_config(page_title="Mihsap AI", layout="wide", page_icon="💼")
 
 # --- 2. GÜVENLİK ---
+# --- 2. GÜVENLİK (ŞİFRELİ VERSİYON) ---
 def giris_kontrol():
     if 'giris_yapildi' not in st.session_state: st.session_state['giris_yapildi'] = False
+    
     if not st.session_state['giris_yapildi']:
         c1, c2, c3 = st.columns([1,2,1])
         with c2:
-            st.markdown("## 🔐 Mihsap AI | Giriş")
-            if st.button("Giriş Yap (Demo)"):
-                st.session_state['giris_yapildi'] = True
-                st.rerun()
+            st.markdown("## 🔐 Mihsap AI | Yönetici Girişi")
+            st.info("Lütfen giriş şifresini giriniz.")
+            
+            # Şifre Kutusu Geri Geldi
+            sifre = st.text_input("Şifre", type="password")
+            
+            if st.button("Giriş Yap"):
+                if sifre == "12345": # Şifreniz burada
+                    st.session_state['giris_yapildi'] = True
+                    st.rerun()
+                else:
+                    st.error("❌ Hatalı Şifre! Tekrar deneyin.")
         st.stop()
-giris_kontrol()
 
 API_KEY = st.secrets.get("GEMINI_API_KEY")
 if not API_KEY: st.error("API Key Eksik!"); st.stop()
@@ -251,3 +260,4 @@ with tab2:
             if col_kat:
                 fig = px.pie(df_db, values=col_tutar, names=col_kat, hole=0.4)
                 st.plotly_chart(fig, use_container_width=True)
+
