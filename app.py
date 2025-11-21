@@ -34,7 +34,6 @@ def giris_kontrol():
                         st.rerun()
                     else: st.error("Hatalı Şifre")
         st.stop()
-
 giris_kontrol()
 
 API_KEY = st.secrets.get("GEMINI_API_KEY")
@@ -58,7 +57,6 @@ def temizle_ve_sayiya_cevir(deger):
         elif "," in s: s = s.replace(",", ".")
         return float(s)
     except: return 0.0
-
 
 def muhasebe_fisne_cevir(df_ham):
     hk = st.session_state['hesap_kodlari']
@@ -90,7 +88,6 @@ def sheets_baglantisi_kur():
         return gspread.authorize(creds)
     except: return None
 
-
 def musteri_listesini_getir():
     client = sheets_baglantisi_kur()
     if not client: return ["Varsayılan Müşteri"]
@@ -100,7 +97,6 @@ def musteri_listesini_getir():
         except: ws = sheet.add_worksheet("Musteriler", 100, 2); ws.append_row(["Müşteri", "Tarih"]); ws.append_row(["Varsayılan Müşteri", str(datetime.now())])
         return ws.col_values(1)[1:] or ["Varsayılan Müşteri"]
     except: return ["Varsayılan Müşteri"]
-
 
 def yeni_musteri_ekle(ad):
     client = sheets_baglantisi_kur()
@@ -115,7 +111,6 @@ def yeni_musteri_ekle(ad):
         return True
     except Exception as e: return str(e)
 
-
 def musteri_sil(ad):
     client = sheets_baglantisi_kur()
     if not client: return False
@@ -128,7 +123,6 @@ def musteri_sil(ad):
         except: pass
         return True
     except Exception as e: return str(e)
-
 
 def sheete_kaydet(veri, musteri):
     client = sheets_baglantisi_kur()
@@ -146,7 +140,6 @@ def sheete_kaydet(veri, musteri):
         return True
     except: return False
 
-
 def sheetten_veri_cek(musteri):
     client = sheets_baglantisi_kur()
     if not client: return pd.DataFrame()
@@ -162,7 +155,7 @@ def sheetten_veri_cek(musteri):
         return df
     except: return pd.DataFrame()
 
-# --- 5. GEMINI & QR ---
+# --- 5. GEMINI (2.5 ÖNCELİKLİ) ---
 @st.cache_data
 def modelleri_getir():
     url = f"https://generativelanguage.googleapis.com/v1beta/models?key={API_KEY}"
@@ -176,16 +169,20 @@ def modelleri_getir():
                     ad = m['name'].replace("models/", "")
                     tum_modeller.append(ad)
         
-        # ÖNE ALMA: Önce 2.5-flash, sonra 2.0-flash, sonra 1.5-flash
-        flash_25 = [m for m in tum_modeller if "2.5-flash" in m]
-        flash_2 = [m for m in tum_modeller if "2.0-flash" in m and m not in flash_25]
-        flash_1 = [m for m in tum_modeller if "1.5-flash" in m and m not in flash_25 and m not in flash_2]
-        diger = [m for m in tum_modeller if m not in flash_25 and m not in flash_2 and m not in flash_1]
+        # --- YENİ SIRALAMA MANTIĞI ---
+        # 1. Öncelik: 2.5 Flash
+        # 2. Öncelik: 2.0 Flash
+        # 3. Öncelik: 1.5 Flash
+        flash_2_5 = [m for m in tum_modeller if "2.5-flash" in m]
+        flash_2_0 = [m for m in tum_modeller if "2.0-flash" in m]
+        flash_1_5 = [m for m in tum_modeller if "1.5-flash" in m]
+        diger = [m for m in tum_modeller if m not in flash_2_5 and m not in flash_2_0 and m not in flash_1_5]
         
-        ordered = flash_25 + flash_2 + flash_1 + diger
-        return ordered
-    except: return []
-
+        # En yenileri başa koy
+        return flash_2_5 + flash_2_0 + flash_1_5 + diger
+    except: 
+        # Hata olursa manuel listeyi döndür
+        return ["gemini-2.5-flash", "gemini-2.0-flash-exp", "gemini-1.5-flash"]
 
 def qr_kodu_oku_ve_filtrele(image_bytes):
     try:
@@ -199,7 +196,6 @@ def qr_kodu_oku_ve_filtrele(image_bytes):
         return None
     except: return None
 
-
 def dosyayi_hazirla(uploaded_file):
     bytes_data = uploaded_file.getvalue()
     mime_type = uploaded_file.type
@@ -209,7 +205,6 @@ def dosyayi_hazirla(uploaded_file):
     buf = io.BytesIO()
     img.save(buf, "JPEG", quality=80)
     return base64.b64encode(buf.getvalue()).decode('utf-8'), "image/jpeg"
-
 
 def gemini_ile_analiz_et(dosya_objesi, secilen_model, mod="fis"):
     try:
@@ -234,21 +229,10 @@ def gemini_ile_analiz_et(dosya_objesi, secilen_model, mod="fis"):
 
         payload = {"contents": [{"parts": [{"text": prompt}, {"inline_data": {"mime_type": mime_type, "data": base64_data}}]}]}
         response = requests.post(url, headers=headers, json=payload)
-        if response.status_code != 200: 
-            try:
-                err = response.json()
-                return {"hata": str(err)}
-            except:
-                return {"hata": f"API Hatası: {response.status_code}"}
+        if response.status_code != 200: return {"hata": "API Hatası"}
         
-        resp_json = response.json()
-        # Güvenli parsing: yapının beklenen yerinde olduğundan emin ol
-        try:
-            metin = resp_json['candidates'][0]['content']['parts'][0]['text']
-            metin = metin.replace("```json", "").replace("```", "").strip()
-            veri = json.loads(metin)
-        except Exception as e:
-            return {"hata": f"Yanıt parse edilemedi: {str(e)}", "raw": resp_json}
+        metin = response.json()['candidates'][0]['content']['parts'][0]['text'].replace("```json", "").replace("```", "").strip()
+        veri = json.loads(metin)
         
         if isinstance(veri, list):
             for v in veri: 
@@ -262,7 +246,6 @@ def gemini_ile_analiz_et(dosya_objesi, secilen_model, mod="fis"):
             veri["_dosya_turu"] = "pdf" if mime_type == "application/pdf" else "jpg"
             return veri
     except Exception as e: return {"hata": str(e)}
-
 
 def arsiv_olustur(veri_listesi):
     zip_buffer = io.BytesIO()
@@ -281,7 +264,7 @@ def arsiv_olustur(veri_listesi):
 # --- 6. ARAYÜZ ---
 with st.sidebar:
     st.title("🏢 Muhabese AI Pro")
-    st.success("🚀 Sınırsız Hız Aktif")
+    st.success("🚀 Sınırsız Hız (2.5 Flash)")
     
     st.markdown("### 👥 Müşteri")
     musteriler = musteri_listesini_getir()
@@ -300,25 +283,16 @@ with st.sidebar:
 
     st.divider()
     modeller = modelleri_getir()
-    # 2.5-Flash varsa öne çıkar ve otomatik seç
-    if modeller:
-        default_index = 0
-        for i, m in enumerate(modeller):
-            if "2.5-flash" in m:
-                default_index = i
-                break
-        model = st.selectbox("AI Modeli", modeller, index=default_index)
-    else:
-        model = "gemini-2.0-flash-exp"
+    # BURASI OTOMATİK OLARAK LİSTENİN İLKİNİ (2.5 FLASH) SEÇECEK
+    model = st.selectbox("AI Modeli", modeller, index=0)
     
-    # HIZ SLIDER'I ARTIK 20'YE KADAR ÇIKIYOR!
+    # HIZ SLIDER'I ARTIK 20'YE KADAR
     hiz = st.slider("Paralel İşlem Gücü", 1, 20, 10) 
     
     if st.button("❌ Temizle"):
         st.session_state['uploader_key'] += 1
         if 'analiz_sonuclari' in st.session_state: del st.session_state['analiz_sonuclari']
         st.rerun()
-
 
 t1, t2, t3 = st.tabs([f"📤 {secili}", "📊 Rapor", "⚙️ Ayar"])
 
@@ -338,10 +312,7 @@ with t1:
                 completed = 0
                 for f in concurrent.futures.as_completed(futures):
                     r = f.result()
-                    if isinstance(r, list):
-                        tum.extend(r)
-                    elif isinstance(r, dict) and "hata" not in r:
-                        tum.append(r)
+                    if "hata" not in r: tum.append(r)
                     completed += 1
                     bar.progress(completed / len(fisler))
         
@@ -350,7 +321,6 @@ with t1:
                 for d in ekstre:
                     r = gemini_ile_analiz_et(d, model, "ekstre")
                     if isinstance(r, list): tum.extend(r)
-                    elif isinstance(r, dict) and "hata" not in r: tum.append(r)
         
         if tum:
             st.session_state['analiz_sonuclari'] = tum
