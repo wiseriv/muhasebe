@@ -1,0 +1,17 @@
+[theme]
+# Ana Renk (Butonlar, Vurgular, Linkler)
+# Güven veren koyu bir "Royal Blue" seçtik.
+primaryColor = "#0F52BA"
+
+# Arka Plan Rengi
+# Bunu boş bırakıyoruz ki sistem Aydınlık/Karanlık moda otomatik geçebilsin.
+# Ama varsayılan olarak Aydınlık başlasın istiyorsan:
+base = "light"
+
+# Yazı Tipi
+# Finansal veriler için en okunaklısı "sans serif"tir.
+font = "sans serif"
+
+[server]
+headless = true
+enableCORS = false
