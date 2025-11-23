@@ -17,7 +17,7 @@ from pyzbar.pyzbar import decode
 import cv2
 import numpy as np
 
-# --- 1. AYARLAR ---
+# --- 1. SAYFA AYARLARI ---
 st.set_page_config(page_title="Muhabese AI", layout="wide", page_icon="🏢")
 
 # --- 2. GÜVENLİK ---
@@ -26,10 +26,10 @@ def giris_kontrol():
     if not st.session_state['giris_yapildi']:
         c1, c2, c3 = st.columns([1,2,1])
         with c2:
-            st.markdown("<h2 style='text-align: center; color: #0F52BA;'>🔐 Muhabese AI | Giriş</h2>", unsafe_allow_html=True)
+            st.markdown("## 🔐 Muhabese AI | Giriş")
             with st.form("login"):
-                sifre = st.text_input("Yönetici Şifresi", type="password")
-                if st.form_submit_button("Giriş Yap", use_container_width=True):
+                sifre = st.text_input("Şifre", type="password")
+                if st.form_submit_button("Giriş"):
                     if sifre == "12345":
                         st.session_state['giris_yapildi'] = True
                         st.rerun()
@@ -38,7 +38,7 @@ def giris_kontrol():
 giris_kontrol()
 
 API_KEY = st.secrets.get("GEMINI_API_KEY")
-if not API_KEY: st.error("Sistem Hatası: API Anahtarı Eksik."); st.stop()
+if not API_KEY: st.error("API Key Eksik!"); st.stop()
 
 # --- 3. DEĞİŞKENLER ---
 if 'uploader_key' not in st.session_state: st.session_state['uploader_key'] = 0
@@ -183,7 +183,7 @@ def sheetten_veri_cek(musteri):
         return df
     except: return pd.DataFrame()
 
-# --- 6. GEMINI & QR ---
+# --- 5. GEMINI & QR ---
 @st.cache_data
 def modelleri_getir():
     url = f"https://generativelanguage.googleapis.com/v1beta/models?key={API_KEY}"
@@ -257,7 +257,7 @@ def gemini_ile_analiz_et(dosya_objesi, secilen_model, mod="fis", retries=3):
             else:
                 veri["dosya_adi"] = dosya_objesi.name
                 veri["qr_gecerli"] = True if qr_data else False
-                veri["_ham_dosya"] = dosya_objesi.getvalue() # Dosyayı burada saklıyoruz
+                veri["_ham_dosya"] = dosya_objesi.getvalue()
                 veri["_dosya_turu"] = "pdf" if mime_type == "application/pdf" else "jpg"
                 return veri
         except Exception as e: return {"hata": str(e)}
@@ -272,7 +272,7 @@ def arsiv_olustur(veri_listesi):
                 zip_file.writestr(yeni_ad, veri["_ham_dosya"])
     return zip_buffer.getvalue()
 
-# --- 7. ARAYÜZ ---
+# --- 6. ARAYÜZ ---
 with st.sidebar:
     st.markdown("""
         <div style="text-align: center;">
@@ -350,9 +350,17 @@ with t2:
         
         # Evrak Listesi
         veriler = st.session_state['analiz_sonuclari']
-        dosya_isimleri = [v.get("dosya_adi", f"Evrak {i}") for i, v in enumerate(veriler)]
         
-        secilen_index = st.selectbox("İncelenecek Evrak", range(len(dosya_isimleri)), format_func=lambda x: dosya_isimleri[x])
+        # İşaretli Liste Oluşturma (✅/⚠️)
+        dosya_listesi = []
+        for i, v in enumerate(veriler):
+            tutar = temizle_ve_sayiya_cevir(v.get("toplam_tutar", 0))
+            ikon = "✅" if tutar > 0 and v.get("isyeri_adi") else "⚠️"
+            etiket = f"{ikon} {i+1}. {v.get('isyeri_adi', 'Bilinmiyor')} ({v.get('toplam_tutar','0')} TL)"
+            dosya_listesi.append(etiket)
+        
+        secilen_etiket = st.selectbox("İncelenecek Evrak", dosya_listesi)
+        secilen_index = dosya_listesi.index(secilen_etiket)
         secili_veri = veriler[secilen_index]
         
         col_img, col_form = st.columns([1, 1])
@@ -361,7 +369,7 @@ with t2:
         with col_img:
             if "_ham_dosya" in secili_veri:
                 if secili_veri["_dosya_turu"] == "pdf":
-                    st.warning("PDF önizleme şu an desteklenmiyor. (Dosyayı açarak kontrol edin)")
+                    st.info("📄 Bu bir PDF belgesidir. Önizleme için dosyayı indirin.")
                 else:
                     st.image(secili_veri["_ham_dosya"], caption="Orijinal Belge", use_column_width=True)
             else:
@@ -373,14 +381,20 @@ with t2:
             with st.form(key=f"edit_form_{secilen_index}"):
                 yeni_isyeri = st.text_input("İşyeri Adı", secili_veri.get("isyeri_adi", ""))
                 yeni_tarih = st.text_input("Tarih", secili_veri.get("tarih", ""))
-                yeni_tutar = st.text_input("Toplam Tutar", secili_veri.get("toplam_tutar", ""))
-                yeni_kategori = st.selectbox("Kategori", ["Gıda", "Ulaşım", "Kırtasiye", "Teknoloji", "Konaklama", "Diğer"], index=["Gıda", "Ulaşım", "Kırtasiye", "Teknoloji", "Konaklama", "Diğer"].index(secili_veri.get("kategori", "Diğer")) if secili_veri.get("kategori") in ["Gıda", "Ulaşım", "Kırtasiye", "Teknoloji", "Konaklama", "Diğer"] else 5)
+                yeni_tutar = st.text_input("Toplam Tutar", str(secili_veri.get("toplam_tutar", "")))
+                yeni_kdv = st.text_input("Toplam KDV", str(secili_veri.get("toplam_kdv", "")))
+                
+                mevcut_kat = secili_veri.get("kategori", "Diğer")
+                kategoriler = ["Gıda", "Ulaşım", "Kırtasiye", "Teknoloji", "Konaklama", "Diğer"]
+                idx = kategoriler.index(mevcut_kat) if mevcut_kat in kategoriler else 5
+                yeni_kategori = st.selectbox("Kategori", kategoriler, index=idx)
                 
                 if st.form_submit_button("💾 Değişiklikleri Kaydet"):
                     # Hafızadaki veriyi güncelle
                     st.session_state['analiz_sonuclari'][secilen_index]["isyeri_adi"] = yeni_isyeri
                     st.session_state['analiz_sonuclari'][secilen_index]["tarih"] = yeni_tarih
                     st.session_state['analiz_sonuclari'][secilen_index]["toplam_tutar"] = yeni_tutar
+                    st.session_state['analiz_sonuclari'][secilen_index]["toplam_kdv"] = yeni_kdv
                     st.session_state['analiz_sonuclari'][secilen_index]["kategori"] = yeni_kategori
                     st.success("Güncellendi!")
                     st.rerun()
