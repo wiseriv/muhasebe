@@ -50,12 +50,6 @@ if 'hesap_kodlari' not in st.session_state:
 if 'analiz_sonuclari' not in st.session_state: st.session_state['analiz_sonuclari'] = []
 
 # --- 3. MOTORLAR ---
-def tr_temizle(text):
-    tr_map = {"ı": "i", "ğ": "g", "ü": "u", "ş": "s", "ö": "o", "ç": "c", "İ": "i", "Ğ": "g", "Ü": "u", "Ş": "s", "Ö": "o", "Ç": "c"}
-    text = str(text)
-    for tr_char, eng_char in tr_map.items(): text = text.replace(tr_char, eng_char)
-    return text.lower().strip().replace(" ", "").replace("_", "")
-
 def temizle_ve_sayiya_cevir(deger):
     if pd.isna(deger) or deger == "": return 0.0
     try:
@@ -84,11 +78,13 @@ def muhasebe_fisne_cevir(df_ham):
             matrah = toplam - kdv
             tarih = str(row.get('tarih', datetime.now().strftime('%d.%m.%Y')))
             kategori = row.get('kategori', 'Diğer')
+            
             gider_kodu = hk.get(kategori, hk["Diğer"])
             aciklama = f"{kategori} - {row.get('isyeri_adi', 'Evrak')}"
             
             if matrah > 0: yevmiye.append({"Tarih": tarih, "Hesap Kodu": gider_kodu, "Açıklama": aciklama, "Borç": matrah, "Alacak": 0})
             if kdv > 0: yevmiye.append({"Tarih": tarih, "Hesap Kodu": hk["KDV"], "Açıklama": "KDV", "Borç": kdv, "Alacak": 0})
+            
             alacak_hesabi = hk["Banka"] if "Ekstre" in str(row.get('dosya_adi','')) else hk["Kasa"]
             yevmiye.append({"Tarih": tarih, "Hesap Kodu": alacak_hesabi, "Açıklama": "Ödeme", "Borç": 0, "Alacak": toplam})
         except: continue
@@ -265,25 +261,30 @@ def arsiv_olustur(veri_listesi):
 
 # --- 6. ARAYÜZ ---
 with st.sidebar:
-    st.markdown("""<div style="text-align: center;"><h1 style="color: #0F52BA; font-size: 28px; margin-bottom: 0;">🏢 Muhabese AI</h1><p style="font-size: 14px; color: gray;">Akıllı Finans Asistanı</p></div>""", unsafe_allow_html=True)
+    st.markdown("""
+        <div style="text-align: center;">
+            <h1 style="color: #0F52BA; font-size: 28px; margin-bottom: 0;">🏢 Muhabese AI</h1>
+            <p style="font-size: 14px; color: gray; margin-top: 0;">Akıllı Finans Asistanı</p>
+        </div>
+        """, unsafe_allow_html=True)
     st.divider()
     
-    st.markdown("### 👥 Müşteri")
+    st.markdown("### 👥 Müşteri Seçimi")
     musteriler = musteri_listesini_getir()
     secili = st.selectbox("Aktif Müşteri", musteriler, label_visibility="collapsed")
     
     with st.expander("➕ Ekle / ➖ Sil"):
-        if st.button("Ekle"):
+        if st.button("Ekle", use_container_width=True):
             yeni = st.text_input("Firma Adı", key="new_c")
             if yeni and yeni_musteri_ekle(yeni) == True: st.success("Eklendi!"); time.sleep(1); st.rerun()
-        if st.button("Sil"):
+        if st.button("Sil", use_container_width=True):
             sil = st.selectbox("Silinecek", [m for m in musteriler if m!="Varsayılan Müşteri"], key="del_c")
             if musteri_sil(sil): st.success("Silindi!"); time.sleep(1); st.rerun()
 
     st.divider()
     modeller = modelleri_getir()
     model = st.selectbox("AI Modeli", modeller, index=0)
-    hiz = st.slider("Hız", 1, 20, 10) 
+    hiz = st.slider("İşlem Hızı", 1, 20, 10) 
     
     if st.button("❌ Ekranı Temizle", use_container_width=True):
         st.session_state['uploader_key'] += 1
@@ -334,7 +335,6 @@ if 'analiz_sonuclari' in st.session_state and st.session_state['analiz_sonuclari
     st.divider()
     st.subheader("📝 Kontrol ve Düzeltme Paneli")
 
-    # Liste Oluştur (İkonlu)
     liste_opsiyonlari = []
     for i, v in enumerate(veriler):
         tutar = temizle_ve_sayiya_cevir(v.get("toplam_tutar", 0))
@@ -345,14 +345,15 @@ if 'analiz_sonuclari' in st.session_state and st.session_state['analiz_sonuclari
     secilen_index = liste_opsiyonlari.index(secilen_etiket)
     secili_veri = veriler[secilen_index]
 
-    # Split View (Sol: Resim, Sağ: Form)
     col_sol, col_sag = st.columns([1, 1])
     
     with col_sol:
-        if "_ham_dosya" in secili_veri:
-            if secili_veri["_dosya_turu"] == "pdf": st.info("📄 PDF Dosyası")
-            else: st.image(secili_veri["_ham_dosya"], caption="Belge Görseli", use_column_width=True)
-        else: st.info("Görsel yok (Ekstre satırı)")
+        # --- GİZLİ RESİM MODU (EXPANDER) ---
+        with st.expander("📸 Belge Görselini Göster", expanded=False):
+            if "_ham_dosya" in secili_veri:
+                if secili_veri["_dosya_turu"] == "pdf": st.info("📄 PDF Dosyası")
+                else: st.image(secili_veri["_ham_dosya"], caption="Belge Görseli", use_column_width=True)
+            else: st.info("Görsel yok (Ekstre satırı)")
 
     with col_sag:
         with st.form(key=f"duzeltme_form_{secilen_index}"):
@@ -374,7 +375,6 @@ if 'analiz_sonuclari' in st.session_state and st.session_state['analiz_sonuclari
 
     st.divider()
     
-    # 4. FİNAL BUTONLARI (KAYDET & İNDİR)
     c_save, c_zip, c_excel, c_muh = st.columns(4)
     
     if c_save.button("💾 VERİTABANINA GÖNDER", type="primary", use_container_width=True):
@@ -384,7 +384,6 @@ if 'analiz_sonuclari' in st.session_state and st.session_state['analiz_sonuclari
         else: st.error("Kayıt hatası!")
 
     dt = pd.DataFrame(veriler)
-    # Ekranda temiz tablo göster
     st.dataframe(dt.drop(columns=["_ham_dosya", "_dosya_turu", "qr_data", "qr_icerigi"], errors='ignore'), use_container_width=True)
 
     c_zip.download_button("📦 ZIP İndir", arsiv_olustur(veriler), "arsiv.zip", "application/zip", use_container_width=True)
@@ -399,16 +398,13 @@ if 'analiz_sonuclari' in st.session_state and st.session_state['analiz_sonuclari
     with pd.ExcelWriter(buf2, engine='openpyxl') as w: df_m.to_excel(w, index=False)
     c_muh.download_button("📥 Fiş Kaydı İndir", buf2.getvalue(), "muhasebe.xlsx", use_container_width=True)
 
-# AYARLAR VE RAPORLAR ALTTA
 with st.expander("⚙️ Hesap Planı Ayarları & Raporlar"):
     t_rap, t_ayar = st.tabs(["📊 Raporlar", "⚙️ Ayarlar"])
     with t_rap:
         if st.button("Verileri Güncelle"): st.rerun()
         df_db = sheetten_veri_cek(secili)
         if not df_db.empty:
-             cols = {tr_temizle(c): c for c in df_db.columns}
-             c_t = next((cols[k] for k in cols if "tutar" in k), None)
-             if c_t: st.metric("Toplam", f"{df_db[c_t].sum():,.2f} ₺"); st.dataframe(df_db)
+             st.dataframe(df_db)
     with t_ayar:
         hk = st.session_state['hesap_kodlari']
         c1, c2 = st.columns(2)
