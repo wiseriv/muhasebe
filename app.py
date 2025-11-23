@@ -48,13 +48,23 @@ if 'hesap_kodlari' not in st.session_state:
         "KDV": "191.18", "Kasa": "100.01", "Banka": "102.01"
     }
 
-# --- 3. MOTORLAR ---
+# --- 3. MOTORLAR (GÜÇLENDİRİLMİŞ SAYI TEMİZLEYİCİ) ---
 def temizle_ve_sayiya_cevir(deger):
-    if pd.isna(deger) or deger == "": return 0.0
+    if pd.isna(deger) or str(deger).strip() == "": return 0.0
     try:
-        s = str(deger).replace("₺", "").replace("TL", "").strip()
-        if "," in s and "." in s: s = s.replace(".", "").replace(",", ".")
-        elif "," in s: s = s.replace(",", ".")
+        # Temel temizlik
+        s = str(deger).replace("₺", "").replace("TL", "").replace("$", "").replace("€", "").strip()
+        
+        # SENARYO 1: "1.850.53" (Hatalı OCR) veya "1.000.000.50"
+        # Birden fazla nokta varsa ve hiç virgül yoksa: En son nokta hariç diğerlerini sil.
+        if s.count('.') > 1 and "," not in s:
+            s = s.replace(".", "", s.count(".") - 1)
+
+        # SENARYO 2: "1.850,53" (Türkçe Standart)
+        elif "," in s:
+            s = s.replace(".", "") # Binlik noktasını sil
+            s = s.replace(",", ".") # Kuruş virgülünü nokta yap
+            
         return float(s)
     except: return 0.0
 
@@ -78,7 +88,7 @@ def muhasebe_fisne_cevir(df_ham):
         except: continue
     return pd.DataFrame(yevmiye)
 
-# --- 4. SHEETS (LINK VEREN SURUM) ---
+# --- 4. SHEETS ---
 @st.cache_resource
 def sheets_baglantisi_kur():
     if "gcp_service_account" not in st.secrets: return None
@@ -92,7 +102,6 @@ def musteri_listesini_getir():
     client = sheets_baglantisi_kur()
     if not client: return ["Varsayılan Müşteri"]
     try:
-        # DİKKAT: Dosya adı "Muhabese Veritabanı"
         sheet = client.open("Muhabese Veritabanı")
         try: ws = sheet.worksheet("Musteriler")
         except: ws = sheet.add_worksheet("Musteriler", 100, 2); ws.append_row(["Müşteri", "Tarih"]); ws.append_row(["Varsayılan Müşteri", str(datetime.now())])
@@ -129,21 +138,24 @@ def sheete_kaydet(veri, musteri):
     client = sheets_baglantisi_kur()
     if not client: return False, "Bağlantı Yok", ""
     try:
-        # Dosyayı aç
         sheet = client.open("Muhabese Veritabanı")
-        dosya_url = f"https://docs.google.com/spreadsheets/d/{sheet.id}" # URL'yi al
-        
+        dosya_url = f"https://docs.google.com/spreadsheets/d/{sheet.id}"
         try: ws = sheet.worksheet(musteri)
-        except: 
-            ws = sheet.add_worksheet(musteri, 1000, 10)
-            ws.append_row(["Dosya Adı", "İşyeri", "Fiş No", "Tarih", "Kategori", "Tutar", "KDV", "Zaman", "Durum", "QR"])
+        except: ws = sheet.add_worksheet(musteri, 1000, 10); ws.append_row(["Dosya Adı", "İşyeri", "Fiş No", "Tarih", "Kategori", "Tutar", "KDV", "Zaman", "Durum", "QR"])
         
         rows = []
         for v in veri:
-            durum = "✅" if float(str(v.get('toplam_tutar',0)).replace(',','.')) > 0 else "⚠️"
+            # Sağlama yaparken yeni temizleyiciyi kullan
+            tutar = temizle_ve_sayiya_cevir(v.get('toplam_tutar', 0))
+            durum = "✅" if tutar > 0 else "⚠️"
             qr_durumu = "📱QR" if v.get("qr_gecerli") else "-"
-            rows.append([v.get("dosya_adi"), v.get("isyeri_adi"), v.get("fiş_no"), v.get("tarih"), v.get("kategori", "Diğer"), str(v.get("toplam_tutar", "0")), str(v.get("toplam_kdv", "0")), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), durum, qr_durumu])
-        
+            
+            rows.append([
+                v.get("dosya_adi"), v.get("isyeri_adi"), v.get("fiş_no"), 
+                v.get("tarih"), v.get("kategori", "Diğer"), 
+                str(v.get("toplam_tutar", "0")), str(v.get("toplam_kdv", "0")), 
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"), durum, qr_durumu
+            ])
         ws.append_rows(rows)
         return True, f"{len(rows)} kayıt eklendi.", dosya_url
     except Exception as e: return False, str(e), ""
@@ -163,7 +175,7 @@ def sheetten_veri_cek(musteri):
         return df
     except: return pd.DataFrame()
 
-# --- 5. GEMINI ---
+# --- 5. GEMINI & QR ---
 @st.cache_data
 def modelleri_getir():
     url = f"https://generativelanguage.googleapis.com/v1beta/models?key={API_KEY}"
@@ -266,12 +278,15 @@ with st.sidebar:
     secili = st.selectbox("Aktif Müşteri", musteriler)
     
     with st.expander("➕ Ekle / ➖ Sil"):
+        yeni = st.text_input("Yeni Firma Adı")
         if st.button("Ekle"):
-            yeni = st.text_input("Firma Adı", key="new_c")
-            if yeni and yeni_musteri_ekle(yeni) == True: st.success("Eklendi!"); time.sleep(1); st.rerun()
+            res = yeni_musteri_ekle(yeni)
+            if res==True: st.success("Eklendi!"); time.sleep(1); st.rerun()
+            else: st.error(res)
+        sil = st.selectbox("Silinecek", [m for m in musteriler if m!="Varsayılan Müşteri"])
         if st.button("Sil"):
-            sil = st.selectbox("Silinecek", [m for m in musteriler if m!="Varsayılan Müşteri"], key="del_c")
-            if musteri_sil(sil): st.success("Silindi!"); time.sleep(1); st.rerun()
+            musteri_sil(sil)
+            st.success("Silindi!"); time.sleep(1); st.rerun()
 
     st.divider()
     modeller = modelleri_getir()
@@ -316,15 +331,11 @@ with t1:
         
         if tum:
             st.session_state['analiz_sonuclari'] = tum
-            
-            # --- GÜNCELLENEN KISIM: URL İLE KAYIT ---
-            basari, mesaj, dosya_linki = sheete_kaydet(tum, secili)
-            
+            basari, mesaj, link = sheete_kaydet(tum, secili)
             if basari:
                 st.success(f"✅ {mesaj}")
-                st.markdown(f"[📂 Kaydedilen Dosyayı Görüntülemek İçin Tıkla]({dosya_linki})") # Tıklanabilir Link
-            else:
-                st.error(f"⚠️ Veritabanı Hatası: {mesaj}")
+                st.markdown(f"[📂 Dosyaya Gitmek İçin Tıkla]({link})")
+            else: st.error(f"⚠️ Veritabanı Hatası: {mesaj}")
         
         if hatalar:
             st.error("🚨 Bazı dosyalar işlenemedi:")
@@ -355,6 +366,7 @@ with t2:
     if not df.empty:
         col_tutar = next((c for c in df.columns if "tutar" in c), None)
         col_kat = next((c for c in df.columns if "kategori" in c), None)
+        col_isyeri = next((c for c in df.columns if "isyeri" in c), None)
         
         if col_tutar:
             st.metric("Toplam", f"{df[col_tutar].sum():,.2f} ₺")
@@ -363,6 +375,11 @@ with t2:
                 if col_kat:
                     fig = px.pie(df, values=col_tutar, names=col_kat, title="Kategori Dağılımı")
                     st.plotly_chart(fig, use_container_width=True)
+            with g2:
+                if col_isyeri:
+                    top5 = df.groupby(col_isyeri)[col_tutar].sum().nlargest(5).reset_index()
+                    fig_bar = px.bar(top5, x=col_isyeri, y=col_tutar, title="En Çok Harcanan Yerler")
+                    st.plotly_chart(fig_bar, use_container_width=True)
             st.dataframe(df, use_container_width=True)
         else: st.warning("Tutar verisi yok.")
     else: st.info("Veri yok.")
